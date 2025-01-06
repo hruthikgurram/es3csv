@@ -165,7 +165,15 @@ class Es3csv:
                         progressbar.ETA(), '] [',
                         progressbar.FileTransferSpeed(unit='docs'), ']'
                         ]
-                bar = progressbar.ProgressBar(widgets=widgets, maxval=self.num_results).start()
+                # bar = progressbar.ProgressBar(widgets=widgets, maxval=self.num_results).start()
+                # Ensure `self.num_results` is an integer
+                if isinstance(self.num_results, dict):
+                    progress_maxval = self.num_results.get('value', 0)  # Default to 0 if no value key
+                else:
+                    progress_maxval = self.num_results
+
+                bar = progressbar.ProgressBar(widgets=widgets, maxval=progress_maxval).start()
+
 
                 while total_lines != self.num_results:
                     if res['_scroll_id'] not in self.scroll_ids:
@@ -241,7 +249,15 @@ class Es3csv:
                            progressbar.ETA(), '] [',
                            progressbar.FileTransferSpeed(unit='lines'), ']'
                            ]
-                bar = progressbar.ProgressBar(widgets=widgets, maxval=self.num_results).start()
+                # bar = progressbar.ProgressBar(widgets=widgets, maxval=self.num_results).start()
+                # Ensure `self.num_results` is an integer
+                if isinstance(self.num_results, dict):
+                    progress_maxval = self.num_results.get('value', 0)  # Default to 0 if no value key
+                else:
+                    progress_maxval = self.num_results
+
+                bar = progressbar.ProgressBar(widgets=widgets, maxval=progress_maxval).start()
+
 
                 for line in codecs.open(self.tmp_file, mode='r', encoding='utf-8'):
                     timer += 1
