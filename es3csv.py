@@ -87,110 +87,101 @@ class Es3csv:
                 exit(1)
         self.opts.index_prefixes = indexes
 
-
+    @retry(elasticsearch.exceptions.ConnectionError, tries=TIMES_TO_TRY)
+    def search_query(self):
         @retry(elasticsearch.exceptions.ConnectionError, tries=TIMES_TO_TRY)
-        def search_query(self):
-            @retry(elasticsearch.exceptions.ConnectionError, tries=TIMES_TO_TRY)
-            def next_scroll(scroll_id):
-                return self.es_conn.scroll(scroll=self.scroll_time, scroll_id=scroll_id)
+        def next_scroll(scroll_id):
+            return self.es_conn.scroll(scroll=self.scroll_time, scroll_id=scroll_id)
 
-            search_args = dict(
-                index=','.join(self.opts.index_prefixes),
-                sort=','.join(self.opts.sort),
-                scroll=self.scroll_time,
-                size=self.opts.scroll_size,
-                terminate_after=self.opts.max_results
+        search_args = dict(
+            index=','.join(self.opts.index_prefixes),
+            sort=','.join(self.opts.sort),
+            scroll=self.scroll_time,
+            size=self.opts.scroll_size,
+            terminate_after=self.opts.max_results
+        )
+
+        if self.opts.doc_types:
+            search_args['doc_type'] = self.opts.doc_types
+
+        if self.opts.query.startswith('@'):
+            query_file = self.opts.query[1:]
+            if os.path.exists(query_file):
+                with codecs.open(query_file, mode='r', encoding='utf-8') as f:
+                    self.opts.query = f.read()
+            else:
+                print('No such file: {}.'.format(query_file))
+                exit(1)
+        if self.opts.raw_query:
+            try:
+                query = json.loads(self.opts.query)
+            except ValueError as e:
+                print('Invalid JSON syntax in query. {}'.format(e))
+                exit(1)
+            search_args['body'] = query
+        else:
+            query = self.opts.query if not self.opts.tags else '{} AND tags: ({})'.format(
+                self.opts.query, ' AND '.join(self.opts.tags))
+            search_args['q'] = query
+
+        if '_all' not in self.opts.fields:
+            search_args['_source_includes'] = self.opts.fields
+            self.csv_headers.extend((field, "utf-8") for field in self.opts.fields if '*' not in field)
+
+        if self.opts.debug_mode:
+            print('Using these indices: {}.'.format(', '.join(self.opts.index_prefixes)))
+            print('Query[{0[0]}]: {0[1]}.'.format(
+                ('Query DSL', json.dumps(query, ensure_ascii=False).encode('utf8')) if self.opts.raw_query else ('Lucene', query))
             )
+            print('Output field(s): {}.'.format(', '.join(self.opts.fields)))
+            print('Sorting by: {}.'.format(', '.join(self.opts.sort)))
 
-            if self.opts.doc_types:
-                search_args['doc_type'] = self.opts.doc_types
+        res = self.es_conn.search(**search_args)
+        self.num_results = res['hits']['total']['value']
 
-            if self.opts.query.startswith('@'):
-                query_file = self.opts.query[1:]
-                if os.path.exists(query_file):
-                    with codecs.open(query_file, mode='r', encoding='utf-8') as f:
-                        self.opts.query = f.read()
-                else:
-                    print('No such file: {}.'.format(query_file))
-                    exit(1)
-            if self.opts.raw_query:
-                try:
-                    query = json.loads(self.opts.query)
-                except ValueError as e:
-                    print('Invalid JSON syntax in query. {}'.format(e))
-                    exit(1)
-                search_args['body'] = query
-            else:
-                query = self.opts.query if not self.opts.tags else '{} AND tags: ({})'.format(
-                    self.opts.query, ' AND '.join(self.opts.tags))
-                search_args['q'] = query
+        print('Found {} results.'.format(self.num_results))
+        if self.opts.debug_mode:
+            print(json.dumps(res, ensure_ascii=False).encode('utf8'))
 
-            if '_all' not in self.opts.fields:
-                search_args['_source_includes'] = self.opts.fields
-                self.csv_headers.extend((field, "utf-8") for field in self.opts.fields if '*' not in field)
+        if self.num_results > 0:
+            codecs.open(self.opts.output_file, mode='w', encoding='utf-8').close()
+            codecs.open(self.tmp_file, mode='w', encoding='utf-8').close()
 
-            if self.opts.debug_mode:
-                print('Using these indices: {}.'.format(', '.join(self.opts.index_prefixes)))
-                print('Query[{0[0]}]: {0[1]}.'.format(
-                    ('Query DSL', json.dumps(query, ensure_ascii=False).encode('utf8')) if self.opts.raw_query else ('Lucene', query))
-                )
-                print('Output field(s): {}.'.format(', '.join(self.opts.fields)))
-                print('Sorting by: {}.'.format(', '.join(self.opts.sort)))
+            hit_list = []
+            total_lines = 0
 
-            res = self.es_conn.search(**search_args)
+            widgets = ['Run query ',
+                       progressbar.Bar(left='[', marker='#', right=']'),
+                       progressbar.FormatLabel(' [%(value)i/%(max)i] ['),
+                       progressbar.Percentage(),
+                       progressbar.FormatLabel('] [%(elapsed)s] ['),
+                       progressbar.ETA(), '] [',
+                       progressbar.FileTransferSpeed(unit='docs'), ']'
+                       ]
+            # bar = progressbar.ProgressBar(widgets=widgets, maxval=self.num_results).start()
 
-            # Fix: Extract numeric total from response
-            if isinstance(res['hits']['total'], dict):
-                self.num_results = res['hits']['total']['value']
-            else:
-                self.num_results = res['hits']['total']
+            while total_lines != self.num_results:
+                if res['_scroll_id'] not in self.scroll_ids:
+                    self.scroll_ids.append(res['_scroll_id'])
 
-            print('Found {} results.'.format(self.num_results))
-            if self.opts.debug_mode:
-                print(json.dumps(res, ensure_ascii=False).encode('utf8'))
-
-            if self.num_results > 0:
-                codecs.open(self.opts.output_file, mode='w', encoding='utf-8').close()
-                codecs.open(self.tmp_file, mode='w', encoding='utf-8').close()
-
-                hit_list = []
-                total_lines = 0
-
-                # Initialize progress bar with numeric maxval
-                maxval = self.num_results if isinstance(self.num_results, int) else 0
-                widgets = [
-                    'Run query ',
-                    progressbar.Bar(left='[', marker='#', right=']'),
-                    progressbar.FormatLabel(' [%(value)i/%(max)i] ['),
-                    progressbar.Percentage(),
-                    progressbar.FormatLabel('] [%(elapsed)s] ['),
-                    progressbar.ETA(), '] [',
-                    progressbar.FileTransferSpeed(unit='docs'), ']'
-                ]
-                # bar = progressbar.ProgressBar(widgets=widgets, maxval=maxval).start()
-
-                while total_lines != self.num_results:
-                    if res['_scroll_id'] not in self.scroll_ids:
-                        self.scroll_ids.append(res['_scroll_id'])
-
-                    if not res['hits']['hits']:
-                        print('Scroll[{}] expired(multiple reads?). Saving loaded data.'.format(res['_scroll_id']))
-                        break
-                    for hit in res['hits']['hits']:
-                        total_lines += 1
-                        # bar.update(total_lines)
-                        hit_list.append(hit)
-                        if len(hit_list) == FLUSH_BUFFER:
-                            self.flush_to_file(hit_list)
-                            hit_list = []
-                        if self.opts.max_results and total_lines == self.opts.max_results:
+                if not res['hits']['hits']:
+                    print('Scroll[{}] expired(multiple reads?). Saving loaded data.'.format(res['_scroll_id']))
+                    break
+                for hit in res['hits']['hits']:
+                    total_lines += 1
+                    # bar.update(total_lines)
+                    hit_list.append(hit)
+                    if len(hit_list) == FLUSH_BUFFER:
+                        self.flush_to_file(hit_list)
+                        hit_list = []
+                    if self.opts.max_results:
+                        if total_lines == self.opts.max_results:
                             self.flush_to_file(hit_list)
                             print('Hit max result limit: {} records'.format(self.opts.max_results))
                             return
-                    res = next_scroll(res['_scroll_id'])
-                self.flush_to_file(hit_list)
-                # bar.finish()
-
+                res = next_scroll(res['_scroll_id'])
+            self.flush_to_file(hit_list)
+            # bar.finish()
 
     def flush_to_file(self, hit_list):
         def to_keyvalue_pairs(source, ancestors=[], header_delimeter='.'):
@@ -243,14 +234,6 @@ class Es3csv:
                            progressbar.FileTransferSpeed(unit='lines'), ']'
                            ]
                 # bar = progressbar.ProgressBar(widgets=widgets, maxval=self.num_results).start()
-                # Ensure `self.num_results` is an integer
-                if isinstance(self.num_results, dict):
-                    progress_maxval = self.num_results.get('value', 0)  # Default to 0 if no value key
-                else:
-                    progress_maxval = self.num_results
-
-                # bar = progressbar.ProgressBar(widgets=widgets, maxval=progress_maxval).start()
-
 
                 for line in codecs.open(self.tmp_file, mode='r', encoding='utf-8'):
                     timer += 1
