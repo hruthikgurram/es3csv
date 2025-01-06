@@ -138,13 +138,12 @@ class Es3csv:
                 print('Sorting by: {}.'.format(', '.join(self.opts.sort)))
 
             res = self.es_conn.search(**search_args)
-            # Fix: Extracting the actual total value
-            # Check if 'total' is a dictionary (new format) or an integer (old format)
+
+            # Fix: Extract numeric total from response
             if isinstance(res['hits']['total'], dict):
                 self.num_results = res['hits']['total']['value']
             else:
                 self.num_results = res['hits']['total']
-
 
             print('Found {} results.'.format(self.num_results))
             if self.opts.debug_mode:
@@ -157,23 +156,18 @@ class Es3csv:
                 hit_list = []
                 total_lines = 0
 
-                widgets = ['Run query ',
-                        progressbar.Bar(left='[', marker='#', right=']'),
-                        progressbar.FormatLabel(' [%(value)i/%(max)i] ['),
-                        progressbar.Percentage(),
-                        progressbar.FormatLabel('] [%(elapsed)s] ['),
-                        progressbar.ETA(), '] [',
-                        progressbar.FileTransferSpeed(unit='docs'), ']'
-                        ]
-                # bar = progressbar.ProgressBar(widgets=widgets, maxval=self.num_results).start()
-                # Ensure `self.num_results` is an integer
-                if isinstance(self.num_results, dict):
-                    progress_maxval = self.num_results.get('value', 0)  # Default to 0 if no value key
-                else:
-                    progress_maxval = self.num_results
-
-                bar = progressbar.ProgressBar(widgets=widgets, maxval=progress_maxval).start()
-
+                # Initialize progress bar with numeric maxval
+                maxval = self.num_results if isinstance(self.num_results, int) else 0
+                widgets = [
+                    'Run query ',
+                    progressbar.Bar(left='[', marker='#', right=']'),
+                    progressbar.FormatLabel(' [%(value)i/%(max)i] ['),
+                    progressbar.Percentage(),
+                    progressbar.FormatLabel('] [%(elapsed)s] ['),
+                    progressbar.ETA(), '] [',
+                    progressbar.FileTransferSpeed(unit='docs'), ']'
+                ]
+                # bar = progressbar.ProgressBar(widgets=widgets, maxval=maxval).start()
 
                 while total_lines != self.num_results:
                     if res['_scroll_id'] not in self.scroll_ids:
@@ -184,19 +178,18 @@ class Es3csv:
                         break
                     for hit in res['hits']['hits']:
                         total_lines += 1
-                        bar.update(total_lines)
+                        # bar.update(total_lines)
                         hit_list.append(hit)
                         if len(hit_list) == FLUSH_BUFFER:
                             self.flush_to_file(hit_list)
                             hit_list = []
-                        if self.opts.max_results:
-                            if total_lines == self.opts.max_results:
-                                self.flush_to_file(hit_list)
-                                print('Hit max result limit: {} records'.format(self.opts.max_results))
-                                return
+                        if self.opts.max_results and total_lines == self.opts.max_results:
+                            self.flush_to_file(hit_list)
+                            print('Hit max result limit: {} records'.format(self.opts.max_results))
+                            return
                     res = next_scroll(res['_scroll_id'])
                 self.flush_to_file(hit_list)
-                bar.finish()
+                # bar.finish()
 
 
     def flush_to_file(self, hit_list):
@@ -256,15 +249,15 @@ class Es3csv:
                 else:
                     progress_maxval = self.num_results
 
-                bar = progressbar.ProgressBar(widgets=widgets, maxval=progress_maxval).start()
+                # bar = progressbar.ProgressBar(widgets=widgets, maxval=progress_maxval).start()
 
 
                 for line in codecs.open(self.tmp_file, mode='r', encoding='utf-8'):
                     timer += 1
-                    bar.update(timer)
+                    # bar.update(timer)
                     csv_writer.writerow(json.loads(line))
                 output_file.close()
-                bar.finish()
+                # bar.finish()
             else:
                 print('There is no docs with selected field(s): {}.'.format(','.join(self.opts.fields)))
             os.remove(self.tmp_file)
