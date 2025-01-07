@@ -13,7 +13,7 @@ import codecs
 from functools import wraps
 import elasticsearch
 import progressbar
-from backports import csv
+import csv
 import sys
 
 
