@@ -14,6 +14,7 @@ from functools import wraps
 import elasticsearch
 import progressbar
 from backports import csv
+import sys
 
 
 FLUSH_BUFFER = 1000  # Chunk of docs to flush in temp file
@@ -43,7 +44,7 @@ def retry(ExceptionToCheck, tries=TIMES_TO_TRY, delay=RETRY_DELAY):
                 return f(*args, **kwargs)
             except ExceptionToCheck as e:
                 print('Fatal Error: {}'.format(e))
-                exit(1)
+                sys.exit(1)
 
         return f_retry
 
@@ -84,7 +85,7 @@ class Es3csv:
             indexes = [index for index in indexes if self.es_conn.indices.exists(index)]
             if not indexes:
                 print('Any of index(es) {} does not exist in {}.'.format(', '.join(self.opts.index_prefixes), self.opts.url))
-                exit(1)
+                sys.exit(1)
         self.opts.index_prefixes = indexes
 
     @retry(elasticsearch.exceptions.ConnectionError, tries=TIMES_TO_TRY)
@@ -111,13 +112,13 @@ class Es3csv:
                     self.opts.query = f.read()
             else:
                 print('No such file: {}.'.format(query_file))
-                exit(1)
+                sys.exit(1)
         if self.opts.raw_query:
             try:
                 query = json.loads(self.opts.query)
             except ValueError as e:
                 print('Invalid JSON syntax in query. {}'.format(e))
-                exit(1)
+                sys.exit(1)
             search_args['body'] = query
         else:
             query = self.opts.query if not self.opts.tags else '{} AND tags: ({})'.format(
